@@ -448,19 +448,55 @@
             errorDiv.classList.add('active');
         }
 
-        function copyToClipboard() {
-            const shortUrl = document.getElementById('shortUrl').textContent;
-            navigator.clipboard.writeText(shortUrl).then(function() {
-                const btn = document.querySelector('.copy-btn');
-                const originalText = btn.textContent;
-                btn.textContent = 'Copied!';
-                btn.style.background = '#38a169';
-                
-                setTimeout(() => {
-                    btn.textContent = originalText;
-                    btn.style.background = '#48bb78';
-                }, 2000);
-            });
+        function showCopyStatus(message, isSuccess) {
+            const btn = document.querySelector('.copy-btn');
+            const originalText = 'Copy Short URL';
+            btn.textContent = message;
+            btn.style.background = isSuccess ? '#38a169' : '#e53e3e';
+
+            setTimeout(() => {
+                btn.textContent = originalText;
+                btn.style.background = '#48bb78';
+            }, 2000);
+        }
+
+        function fallbackCopyText(text) {
+            const textarea = document.createElement('textarea');
+            textarea.value = text;
+            textarea.setAttribute('readonly', '');
+            textarea.style.position = 'fixed';
+            textarea.style.top = '-9999px';
+            document.body.appendChild(textarea);
+            textarea.focus();
+            textarea.select();
+            const copied = document.execCommand('copy');
+            document.body.removeChild(textarea);
+            return copied;
+        }
+
+        async function copyToClipboard() {
+            const shortUrl = document.getElementById('shortUrl').textContent.trim();
+            if (!shortUrl) {
+                showCopyStatus('No URL to copy', false);
+                return;
+            }
+
+            try {
+                if (navigator.clipboard && window.isSecureContext) {
+                    await navigator.clipboard.writeText(shortUrl);
+                    showCopyStatus('Copied!', true);
+                    return;
+                }
+            } catch (error) {
+                // Fall back to legacy copy API below.
+            }
+
+            const copied = fallbackCopyText(shortUrl);
+            if (copied) {
+                showCopyStatus('Copied!', true);
+            } else {
+                showCopyStatus('Copy failed', false);
+            }
         }
 
         // Auto-add https:// if missing
