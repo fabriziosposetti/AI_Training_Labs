@@ -1,13 +1,12 @@
-from fastapi import FastAPI, HTTPException, Depends, Request, Form
+from fastapi import FastAPI, HTTPException, Request, Form
 from fastapi.responses import RedirectResponse, HTMLResponse
 from fastapi.templating import Jinja2Templates
-from pydantic import BaseModel, HttpUrl, validator
+from pydantic import BaseModel, validator
 import sqlite3
 import string
 import random
-import os
 from contextlib import contextmanager
-from typing import Optional
+import os
 
 # Initialize FastAPI app
 app = FastAPI(title="URL Shortener", version="1.0.0")
@@ -16,7 +15,10 @@ app = FastAPI(title="URL Shortener", version="1.0.0")
 templates = Jinja2Templates(directory="templates")
 
 # Database setup
-DATABASE = "urls.db"
+DATABASE = os.getenv("DATABASE_PATH")
+if not DATABASE:
+    # On Vercel filesystem is read-only except /tmp.
+    DATABASE = "/tmp/urls.db" if os.getenv("VERCEL") else "urls.db"
 
 def init_db():
     """Initialize SQLite database with urls table"""
@@ -53,6 +55,34 @@ def validate_url(url: str) -> str:
         url = 'https://' + url
     return url
 
+def get_or_create_short_code(original_url: str) -> str:
+    """Return existing short code for URL or create a new one."""
+    with get_db() as conn:
+        existing = conn.execute(
+            "SELECT short_code FROM urls WHERE original_url = ?",
+            (original_url,)
+        ).fetchone()
+
+        if existing:
+            return existing['short_code']
+
+        while True:
+            short_code = generate_short_code()
+            exists = conn.execute(
+                "SELECT 1 FROM urls WHERE short_code = ?",
+                (short_code,)
+            ).fetchone()
+
+            if not exists:
+                break
+
+        conn.execute(
+            "INSERT INTO urls (original_url, short_code) VALUES (?, ?)",
+            (original_url, short_code)
+        )
+        conn.commit()
+        return short_code
+
 # Pydantic models
 class URLRequest(BaseModel):
     url: str
@@ -72,42 +102,12 @@ class URLResponse(BaseModel):
 
 # API Endpoints
 @app.post("/shorten", response_model=URLResponse)
-async def shorten_url(request: URLRequest):
+async def shorten_url(payload: URLRequest, request: Request):
     """Shorten a URL and return the short code"""
-    original_url = request.url
-    
-    with get_db() as conn:
-        # Check if URL already exists
-        existing = conn.execute(
-            "SELECT short_code FROM urls WHERE original_url = ?",
-            (original_url,)
-        ).fetchone()
-        
-        if existing:
-            short_code = existing['short_code']
-        else:
-            # Generate unique short code
-            while True:
-                short_code = generate_short_code()
-                # Check if short code already exists
-                exists = conn.execute(
-                    "SELECT 1 FROM urls WHERE short_code = ?",
-                    (short_code,)
-                ).fetchone()
-                
-                if not exists:
-                    break
-            
-            # Insert new URL
-            conn.execute(
-                "INSERT INTO urls (original_url, short_code) VALUES (?, ?)",
-                (original_url, short_code)
-            )
-            conn.commit()
-    
-    # Build short URL
-    short_url = f"http://localhost:8000/{short_code}"
-    
+    original_url = payload.url
+    short_code = get_or_create_short_code(original_url)
+    short_url = str(request.url_for("redirect_url", short_code=short_code))
+
     return URLResponse(short_code=short_code, short_url=short_url)
 
 @app.get("/{short_code}")
@@ -131,11 +131,12 @@ async def home(request: Request):
     return templates.TemplateResponse("index.html", {"request": request})
 
 @app.post("/shorten-form")
-async def shorten_form(url: str = Form(...)):
+async def shorten_form(request: Request, url: str = Form(...)):
     """Handle form submission"""
     try:
-        request = URLRequest(url=url)
-        result = await shorten_url(request)
+        payload = URLRequest(url=url)
+        short_code = get_or_create_short_code(payload.url)
+        short_url = str(request.url_for("redirect_url", short_code=short_code))
         return HTMLResponse(f"""
         <!DOCTYPE html>
         <html>
@@ -154,8 +155,8 @@ async def shorten_form(url: str = Form(...)):
             <h1>URL Shortened Successfully!</h1>
             <div class="result">
                 <p><strong>Original URL:</strong> {url}</p>
-                <p><strong>Short URL:</strong> <span class="short-url">{result.short_url}</span></p>
-                <p><strong>Short Code:</strong> {result.short_code}</p>
+                <p><strong>Short URL:</strong> <span class="short-url">{short_url}</span></p>
+                <p><strong>Short Code:</strong> {short_code}</p>
             </div>
             <button onclick="window.location.href='/'">Shorten Another</button>
         </body>
